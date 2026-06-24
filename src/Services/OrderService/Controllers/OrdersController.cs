@@ -13,10 +13,14 @@ namespace OrderService.Controllers;
 public class OrdersController : ControllerBase
 {
     private readonly OrdersDbContext _db;
+    private readonly ILogger<OrdersController> _logger;
 
-    public OrdersController(OrdersDbContext db)
+    public OrdersController(
+        OrdersDbContext db,
+        ILogger<OrdersController> logger)
     {
         _db = db;
+        _logger = logger;
     }
 
     [HttpPost]
@@ -49,9 +53,6 @@ public class OrdersController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        _db.OrderEvents.Add(orderEvent);
-        await _db.SaveChangesAsync();
-
         var outboxMessage = new OutboxMessage
         {
             Id = Guid.NewGuid(),
@@ -69,9 +70,16 @@ public class OrdersController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow
         };
 
+        _db.OrderEvents.Add(orderEvent);
         _db.OutboxMessages.Add(outboxMessage);
 
         await _db.SaveChangesAsync();
+
+        _logger.LogInformation(
+    "Order created. OrderId={OrderId}, CorrelationId={CorrelationId}, TotalAmount={TotalAmount}",
+    order.Id,
+    correlationId,
+    order.TotalAmount);
 
         return CreatedAtAction(
             nameof(GetOrder),
@@ -107,6 +115,10 @@ public class OrdersController : ControllerBase
         order.Status = "Cancelled";
 
         await _db.SaveChangesAsync();
+
+        _logger.LogInformation(
+    "Order cancelled. OrderId={OrderId}",
+    order.Id);
 
         return NoContent();
     }

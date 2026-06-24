@@ -10,5 +10,7 @@ public class OutboxMessage
 
     public bool Published { get; set; }
 
+    public Guid CorrelationId { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

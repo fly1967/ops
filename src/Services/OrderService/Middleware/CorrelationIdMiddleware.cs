@@ -1,3 +1,5 @@
+using Serilog.Context;
+
 namespace OrderService.Middleware;
 
 public class CorrelationIdMiddleware
@@ -13,7 +15,8 @@ public class CorrelationIdMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        var correlationId = context.Request.Headers.TryGetValue(HeaderName, out var value)
+        var correlationId =
+            context.Request.Headers.TryGetValue(HeaderName, out var value)
             && Guid.TryParse(value, out var parsed)
                 ? parsed
                 : Guid.NewGuid();
@@ -26,6 +29,9 @@ public class CorrelationIdMiddleware
             return Task.CompletedTask;
         });
 
-        await _next(context);
+        using (LogContext.PushProperty("CorrelationId", correlationId))
+        {
+            await _next(context);
+        }
     }
 }
