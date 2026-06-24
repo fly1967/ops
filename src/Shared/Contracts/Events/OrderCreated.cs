@@ -1,0 +1,4 @@
+public record OrderCreated : EventBase
+{
+
+}
