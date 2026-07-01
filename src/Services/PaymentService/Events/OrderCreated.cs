@@ -9,4 +9,4 @@ public sealed class OrderCreated
     public decimal TotalAmount { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
-}s
+}

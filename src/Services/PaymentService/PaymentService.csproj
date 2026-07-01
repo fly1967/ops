@@ -166,10 +166,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.9" />
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Messaging\" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
 
 </Project>
