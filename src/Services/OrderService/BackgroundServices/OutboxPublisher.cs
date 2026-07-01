@@ -1,25 +1,28 @@
 using Microsoft.EntityFrameworkCore;
 using OrderService.Data;
+using OrderService.Messaging;
 
 namespace OrderService.BackgroundServices;
 
-public class OutboxPublisher : BackgroundService
+public sealed class OutboxPublisher : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<OutboxPublisher> _logger;
+    private readonly RabbitMqPublisher _rabbitMqPublisher;
 
     public OutboxPublisher(
         IServiceScopeFactory scopeFactory,
-        ILogger<OutboxPublisher> logger)
+        ILogger<OutboxPublisher> logger,
+        RabbitMqPublisher rabbitMqPublisher)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _rabbitMqPublisher = rabbitMqPublisher;
     }
 
-    protected override async Task ExecuteAsync(
-        CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Outbox Publisher started");
+        _logger.LogInformation("Outbox Publisher started.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -27,46 +30,46 @@ public class OutboxPublisher : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
 
-                var db =
-                    scope.ServiceProvider
-                         .GetRequiredService<OrdersDbContext>();
+                var dbContext = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
 
-                var messages = await db.OutboxMessages
-                    .Where(x => !x.Published)
-                    .OrderBy(x => x.CreatedAtUtc)
+                var messages = await dbContext.OutboxMessages
+                    .Where(m => m.PublishedAtUtc == null)
+                    .OrderBy(m => m.CreatedAtUtc)
+                    .Take(10)
                     .ToListAsync(stoppingToken);
 
-                foreach (var message in messages)
+                foreach (var outboxMessage in messages)
                 {
-                    _logger.LogInformation(
-                        "Publishing EventType={EventType}, MessageId={MessageId}",
-                        message.EventType,
-                        message.Id);
+                    try
+                    {
+                        await _rabbitMqPublisher.PublishAsync(
+                            outboxMessage.EventType,
+                            outboxMessage.Payload,
+                            stoppingToken);
 
-                    // RabbitMQ will go here later
+                        outboxMessage.PublishedAtUtc = DateTime.UtcNow;
 
-                    message.Published = true;
+                        _logger.LogInformation(
+                            "Published Outbox Message {MessageId}",
+                            outboxMessage.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "Failed to publish Outbox Message {MessageId}",
+                            outboxMessage.Id);
+                    }
                 }
 
-                if (messages.Any())
-                {
-                    await db.SaveChangesAsync(stoppingToken);
-
-                    _logger.LogInformation(
-                        "Published {Count} outbox messages",
-                        messages.Count);
-                }
+                await dbContext.SaveChangesAsync(stoppingToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error while processing outbox messages");
+                _logger.LogError(ex, "Error processing outbox messages.");
             }
 
-            await Task.Delay(
-                TimeSpan.FromSeconds(5),
-                stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
         }
     }
 }

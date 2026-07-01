@@ -3,6 +3,7 @@ using OrderService.Data;
 using OrderService.Middleware;
 using Serilog;
 using OrderService.BackgroundServices;
+using OrderService.Messaging;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,7 +27,7 @@ builder.Services.AddHealthChecks()
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
+builder.Services.AddSingleton<RabbitMqPublisher>();
 var app = builder.Build();
 
 app.UseSerilogRequestLogging();
