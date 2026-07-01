@@ -56,6 +56,8 @@ public class OrdersController : ControllerBase
         var outboxMessage = new OutboxMessage
         {
             Id = Guid.NewGuid(),
+            OrderId = order.Id,
+            CorrelationId = correlationId,
             EventType = "OrderCreated",
             Payload = JsonSerializer.Serialize(new
             {

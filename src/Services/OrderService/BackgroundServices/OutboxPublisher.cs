@@ -23,7 +23,7 @@ public sealed class OutboxPublisher : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Outbox Publisher started.");
-
+        Console.WriteLine("***** RabbitMqConsumer starting *****");
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -48,6 +48,7 @@ public sealed class OutboxPublisher : BackgroundService
                             stoppingToken);
 
                         outboxMessage.PublishedAtUtc = DateTime.UtcNow;
+                        outboxMessage.Published = true;
 
                         _logger.LogInformation(
                             "Published Outbox Message {MessageId}",

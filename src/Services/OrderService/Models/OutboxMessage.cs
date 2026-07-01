@@ -10,8 +10,9 @@ public class OutboxMessage
 
     public bool Published { get; set; }
 
+    public Guid OrderId { get; set; }
     public Guid CorrelationId { get; set; }
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
-    public DateTime? PublishedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? PublishedAtUtc { get; set; }
 }
