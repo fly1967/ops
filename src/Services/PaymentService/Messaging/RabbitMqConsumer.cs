@@ -27,8 +27,6 @@ public sealed class RabbitMqConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        Console.WriteLine("***** RabbitMqConsumer starting *****");
-
         var factory = new ConnectionFactory
         {
             HostName = _configuration["RabbitMq:HostName"] ?? "localhost",
@@ -44,18 +42,12 @@ public sealed class RabbitMqConsumer : BackgroundService
         var queueName = _configuration["RabbitMq:QueueName"] ?? "payment.queue";
         var routingKey = _configuration["RabbitMq:RoutingKey"] ?? "OrderCreated";
 
-        Console.WriteLine($"Exchange    : {exchangeName}");
-        Console.WriteLine($"Queue       : {queueName}");
-        Console.WriteLine($"Routing Key : {routingKey}");
-
         await channel.ExchangeDeclareAsync(
             exchange: exchangeName,
             type: ExchangeType.Topic,
             durable: true,
             autoDelete: false,
             cancellationToken: stoppingToken);
-
-        Console.WriteLine("Exchange declared.");
 
         await channel.QueueDeclareAsync(
             queue: queueName,
@@ -64,27 +56,19 @@ public sealed class RabbitMqConsumer : BackgroundService
             autoDelete: false,
             cancellationToken: stoppingToken);
 
-        Console.WriteLine("Queue declared.");
-
         await channel.QueueBindAsync(
             queue: queueName,
             exchange: exchangeName,
             routingKey: routingKey,
             cancellationToken: stoppingToken);
 
-        Console.WriteLine("Queue bound to exchange.");
-
         var consumer = new AsyncEventingBasicConsumer(channel);
 
         consumer.ReceivedAsync += async (_, ea) =>
         {
-            Console.WriteLine("***** PaymentService received a RabbitMQ message *****");
-
             try
             {
                 var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-
-                Console.WriteLine(json);
 
                 var order = JsonSerializer.Deserialize<OrderCreated>(
                     json,
@@ -95,8 +79,6 @@ public sealed class RabbitMqConsumer : BackgroundService
 
                 if (order == null)
                 {
-                    Console.WriteLine("Deserialization returned null.");
-
                     await channel.BasicNackAsync(
                         ea.DeliveryTag,
                         false,
@@ -105,8 +87,6 @@ public sealed class RabbitMqConsumer : BackgroundService
 
                     return;
                 }
-
-                Console.WriteLine($"Processing Order {order.OrderId}");
 
                 using var scope = _scopeFactory.CreateScope();
 
@@ -118,8 +98,6 @@ public sealed class RabbitMqConsumer : BackgroundService
 
                 if (alreadyExists)
                 {
-                    Console.WriteLine("Payment already exists.");
-
                     await channel.BasicAckAsync(
                         ea.DeliveryTag,
                         false,
@@ -139,19 +117,14 @@ public sealed class RabbitMqConsumer : BackgroundService
 
                 await db.SaveChangesAsync(stoppingToken);
 
-                Console.WriteLine("Payment saved.");
-
                 await channel.BasicAckAsync(
                     ea.DeliveryTag,
                     false,
                     stoppingToken);
 
-                Console.WriteLine("Message acknowledged.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex);
-
                 await channel.BasicNackAsync(
                     ea.DeliveryTag,
                     false,
@@ -165,8 +138,6 @@ public sealed class RabbitMqConsumer : BackgroundService
             autoAck: false,
             consumer: consumer,
             cancellationToken: stoppingToken);
-
-        Console.WriteLine("***** PaymentService is listening on payment.queue *****");
 
         while (!stoppingToken.IsCancellationRequested)
         {
