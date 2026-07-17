@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using PaymentService.Data;
 using PaymentService.Entities;
@@ -35,12 +36,25 @@ public sealed class RabbitMqConsumer : BackgroundService
             Password = _configuration["RabbitMq:Password"] ?? "guest"
         };
 
-        await using var connection = await factory.CreateConnectionAsync(stoppingToken);
-        await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
+        var exchangeName =
+            _configuration["RabbitMq:ExchangeName"] ?? "orders.exchange";
 
-        var exchangeName = _configuration["RabbitMq:ExchangeName"] ?? "orders.exchange";
-        var queueName = _configuration["RabbitMq:QueueName"] ?? "payment.queue";
-        var routingKey = _configuration["RabbitMq:RoutingKey"] ?? "OrderCreated";
+        var queueName =
+            _configuration["RabbitMq:QueueName"] ?? "payment.queue";
+
+        var routingKey =
+            _configuration["RabbitMq:RoutingKey"] ?? "OrderCreated";
+
+        _logger.LogInformation(
+            "Starting RabbitMQ consumer for queue {QueueName}",
+            queueName);
+
+        await using var connection =
+            await factory.CreateConnectionAsync(stoppingToken);
+
+        await using var channel =
+            await connection.CreateChannelAsync(
+                cancellationToken: stoppingToken);
 
         await channel.ExchangeDeclareAsync(
             exchange: exchangeName,
@@ -62,14 +76,21 @@ public sealed class RabbitMqConsumer : BackgroundService
             routingKey: routingKey,
             cancellationToken: stoppingToken);
 
+        // Process one unacknowledged message at a time.
+        await channel.BasicQosAsync(
+            prefetchSize: 0,
+            prefetchCount: 1,
+            global: false,
+            cancellationToken: stoppingToken);
+
         var consumer = new AsyncEventingBasicConsumer(channel);
 
         consumer.ReceivedAsync += async (_, ea) =>
         {
+            var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+
             try
             {
-                var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-
                 var order = JsonSerializer.Deserialize<OrderCreated>(
                     json,
                     new JsonSerializerOptions
@@ -77,59 +98,102 @@ public sealed class RabbitMqConsumer : BackgroundService
                         PropertyNameCaseInsensitive = true
                     });
 
-                if (order == null)
+                if (order is null)
                 {
+                    _logger.LogWarning(
+                        "Discarding RabbitMQ message because it could not " +
+                        "be deserialized into OrderCreated. Payload: {Payload}",
+                        json);
+
                     await channel.BasicNackAsync(
-                        ea.DeliveryTag,
-                        false,
-                        false,
-                        stoppingToken);
+                        deliveryTag: ea.DeliveryTag,
+                        multiple: false,
+                        requeue: false,
+                        cancellationToken: stoppingToken);
 
                     return;
                 }
 
-                using var scope = _scopeFactory.CreateScope();
+                _logger.LogInformation(
+                    "Received OrderCreated event for OrderId {OrderId} " +
+                    "and CorrelationId {CorrelationId}",
+                    order.OrderId,
+                    order.CorrelationId);
 
-                var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
+                await using var scope =
+                    _scopeFactory.CreateAsyncScope();
 
-                var alreadyExists = await db.Payments.AnyAsync(
-                    p => p.OrderId == order.OrderId,
-                    stoppingToken);
+                var db = scope.ServiceProvider
+                    .GetRequiredService<PaymentDbContext>();
 
-                if (alreadyExists)
-                {
-                    await channel.BasicAckAsync(
-                        ea.DeliveryTag,
-                        false,
-                        stoppingToken);
-
-                    return;
-                }
-
-                db.Payments.Add(new Payment
+                var payment = new Payment
                 {
                     Id = Guid.NewGuid(),
                     OrderId = order.OrderId,
                     Amount = order.TotalAmount,
                     Status = "Succeeded",
                     CreatedAtUtc = DateTime.UtcNow
-                });
+                };
+
+                db.Payments.Add(payment);
 
                 await db.SaveChangesAsync(stoppingToken);
 
                 await channel.BasicAckAsync(
-                    ea.DeliveryTag,
-                    false,
-                    stoppingToken);
+                    deliveryTag: ea.DeliveryTag,
+                    multiple: false,
+                    cancellationToken: stoppingToken);
 
+                _logger.LogInformation(
+                    "Created payment {PaymentId} for OrderId {OrderId}",
+                    payment.Id,
+                    payment.OrderId);
+            }
+            catch (DbUpdateException ex)
+                when (IsDuplicateKeyException(ex))
+            {
+                // The unique index on Payments.OrderId means that this
+                // event has already been processed.
+                _logger.LogInformation(
+                    "OrderCreated event has already been processed. " +
+                    "Acknowledging duplicate message.");
+
+                await channel.BasicAckAsync(
+                    deliveryTag: ea.DeliveryTag,
+                    multiple: false,
+                    cancellationToken: stoppingToken);
+            }
+            catch (JsonException ex)
+            {
+                // The message is invalid and retrying it will not fix it.
+                _logger.LogError(
+                    ex,
+                    "Discarding malformed RabbitMQ message. Payload: {Payload}",
+                    json);
+
+                await channel.BasicNackAsync(
+                    deliveryTag: ea.DeliveryTag,
+                    multiple: false,
+                    requeue: false,
+                    cancellationToken: stoppingToken);
+            }
+            catch (OperationCanceledException)
+                when (stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogInformation(
+                    "RabbitMQ consumer is stopping.");
             }
             catch (Exception ex)
             {
+                _logger.LogError(
+                    ex,
+                    "Payment processing failed. Requeuing RabbitMQ message.");
+
                 await channel.BasicNackAsync(
-                    ea.DeliveryTag,
-                    false,
-                    true,
-                    stoppingToken);
+                    deliveryTag: ea.DeliveryTag,
+                    multiple: false,
+                    requeue: true,
+                    cancellationToken: stoppingToken);
             }
         };
 
@@ -139,9 +203,30 @@ public sealed class RabbitMqConsumer : BackgroundService
             consumer: consumer,
             cancellationToken: stoppingToken);
 
-        while (!stoppingToken.IsCancellationRequested)
+        _logger.LogInformation(
+            "RabbitMQ consumer is listening on queue {QueueName}",
+            queueName);
+
+        try
         {
-            await Task.Delay(1000, stoppingToken);
+            await Task.Delay(
+                Timeout.InfiniteTimeSpan,
+                stoppingToken);
         }
+        catch (OperationCanceledException)
+            when (stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "RabbitMQ consumer stopped.");
+        }
+    }
+
+    private static bool IsDuplicateKeyException(
+        DbUpdateException exception)
+    {
+        return exception.InnerException is SqlException
+        {
+            Number: 2601 or 2627
+        };
     }
 }

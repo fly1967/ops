@@ -18,6 +18,9 @@ public sealed class PaymentDbContext : DbContext
         {
             entity.HasKey(p => p.Id);
 
+            entity.HasIndex(p => p.OrderId)
+                .IsUnique();
+            
             entity.Property(p => p.Amount)
                 .HasColumnType("decimal(18,2)");
 
