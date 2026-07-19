@@ -48,4 +48,7 @@ app.MapControllers();
 
 app.MapHealthChecks("/health");
 
+Console.WriteLine(
+    builder.Configuration.GetConnectionString("OrdersDb"));
+
 app.Run();
